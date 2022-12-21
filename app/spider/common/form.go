@@ -1,16 +1,18 @@
 package common
 
 import (
-	"github.com/PuerkitoBio/goquery"
-	. "github.com/henrylee2cn/pholcus/app/spider"
-	// "github.com/henrylee2cn/surfer/errors"
 	"net/url"
 	"strings"
+
+	"github.com/henrylee2cn/pholcus/common/goquery"
+
+	"github.com/henrylee2cn/pholcus/app/downloader/request"
+	. "github.com/henrylee2cn/pholcus/app/spider"
 )
 
 // Form is the default form element.
 type Form struct {
-	spider    *Spider
+	ctx       *Context
 	rule      string
 	selection *goquery.Selection
 	method    string
@@ -20,7 +22,7 @@ type Form struct {
 }
 
 // NewForm creates and returns a *Form type.
-func NewForm(sp *Spider, rule string, u string, form *goquery.Selection, schemeAndHost ...string) *Form {
+func NewForm(ctx *Context, rule string, u string, form *goquery.Selection, schemeAndHost ...string) *Form {
 	fields, buttons := serializeForm(form)
 	if len(schemeAndHost) == 0 {
 		aurl, _ := url.Parse(u)
@@ -34,7 +36,7 @@ func NewForm(sp *Spider, rule string, u string, form *goquery.Selection, schemeA
 		method = "GET"
 	}
 	return &Form{
-		spider:    sp,
+		ctx:       ctx,
 		rule:      rule,
 		selection: form,
 		method:    method,
@@ -108,30 +110,30 @@ func (self *Form) send(buttonName, buttonValue string) bool {
 	if buttonName != "" {
 		values.Set(buttonName, buttonValue)
 	}
-
+	valsStr := values.Encode()
 	if self.Method() == "GET" {
-		self.spider.AddQueue(map[string]interface{}{
-			"Rule":   self.rule,
-			"Url":    self.Action() + "?" + values.Encode(),
-			"Method": self.Method(),
+		self.ctx.AddQueue(&request.Request{
+			Rule:   self.rule,
+			Url:    self.Action() + "?" + valsStr,
+			Method: self.Method(),
 		})
 		return true
 	} else {
 		enctype, _ := self.selection.Attr("enctype")
 		if enctype == "multipart/form-data" {
-			self.spider.AddQueue(map[string]interface{}{
-				"Rule":     self.rule,
-				"Url":      self.Action(),
-				"PostData": values,
-				"Method":   "POST-M",
+			self.ctx.AddQueue(&request.Request{
+				Rule:     self.rule,
+				Url:      self.Action(),
+				PostData: valsStr,
+				Method:   "POST-M",
 			})
 			return true
 		}
-		self.spider.AddQueue(map[string]interface{}{
-			"Rule":     self.rule,
-			"Url":      self.Action(),
-			"PostData": values,
-			"Method":   self.Method(),
+		self.ctx.AddQueue(&request.Request{
+			Rule:     self.rule,
+			Url:      self.Action(),
+			PostData: valsStr,
+			Method:   self.Method(),
 		})
 		return true
 	}

@@ -5,23 +5,37 @@ package gui
 
 import (
 	"log"
-	"runtime"
+
+	"github.com/lxn/walk"
+	"github.com/lxn/walk/declarative"
 
 	"github.com/henrylee2cn/pholcus/app"
 	"github.com/henrylee2cn/pholcus/app/spider"
-	"github.com/lxn/walk"
+	. "github.com/henrylee2cn/pholcus/gui/model"
+	"github.com/henrylee2cn/pholcus/runtime/status"
 )
 
-var LogicApp = app.New()
-
+// 执行入口
 func Run() {
-	// 开启最大核心数运行
-	runtime.GOMAXPROCS(runtime.NumCPU())
+	app.LogicApp.SetAppConf("Mode", status.OFFLINE)
+
+	outputList = func() (o []declarative.RadioButton) {
+		// 设置默认选择
+		Input.AppConf.OutType = app.LogicApp.GetOutputLib()[0]
+		// 获取输出选项
+		for _, out := range app.LogicApp.GetOutputLib() {
+			o = append(o, declarative.RadioButton{Text: out, Value: out})
+		}
+		return
+	}()
+
+	spiderMenu = NewSpiderMenu(spider.Species)
+
 	runmodeWindow()
 }
 
 func Init() {
-	LogicApp.Init(Input.RunMode, Input.Port, Input.Master)
+	app.LogicApp.Init(Input.Mode, Input.Port, Input.Master)
 }
 
 func SetTaskConf() {
@@ -29,12 +43,13 @@ func SetTaskConf() {
 	if Input.ThreadNum == 0 {
 		Input.ThreadNum = 1
 	}
-	LogicApp.SetThreadNum(Input.ThreadNum)
-	LogicApp.SetPausetime([2]uint{Input.BaseSleeptime, Input.RandomSleepPeriod})
-	LogicApp.SetOutType(Input.OutType)
-	LogicApp.SetDockerCap(Input.DockerCap) //分段转储容器容量
-	// 选填项
-	LogicApp.SetMaxPage(Input.MaxPage)
+	app.LogicApp.SetAppConf("ThreadNum", Input.ThreadNum).
+		SetAppConf("Pausetime", Input.Pausetime).
+		SetAppConf("ProxyMinute", Input.ProxyMinute).
+		SetAppConf("OutType", Input.OutType).
+		SetAppConf("DockerCap", Input.DockerCap).
+		SetAppConf("Limit", Input.Limit).
+		SetAppConf("Keyins", Input.Keyins)
 }
 
 func SpiderPrepare() {
@@ -42,7 +57,7 @@ func SpiderPrepare() {
 	for _, sp := range Input.Spiders {
 		sps = append(sps, sp.Spider)
 	}
-	LogicApp.SpiderPrepare(sps, Input.Keywords)
+	app.LogicApp.SpiderPrepare(sps)
 }
 
 func SpiderNames() (names []string) {
@@ -56,12 +71,12 @@ func setWindow() {
 	// 绑定log输出界面
 	lv, err := NewLogView(mw)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	LogicApp.SetLog(lv)
-
+	app.LogicApp.SetLog(lv)
+	log.SetOutput(lv)
 	// 设置左上角图标
-	if icon, err := walk.NewIconFromResource("ICON"); err == nil {
+	if icon, err := walk.NewIconFromResourceId(3); err == nil {
 		mw.SetIcon(icon)
 	}
 }

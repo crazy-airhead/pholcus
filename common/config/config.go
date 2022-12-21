@@ -1,255 +1,144 @@
-// Package config provides for parse config file.
+// Copyright 2014 beego Author. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package config is used to parse config
+// Usage:
+// import(
+//   "github.com/astaxie/beego/config"
+// )
+//
+//  cnf, err := config.NewConfig("ini", "config.conf")
+//
+//  cnf APIS:
+//
+//  cnf.Set(key, val string) error
+//  cnf.String(key string) string
+//  cnf.Strings(key string) []string
+//  cnf.Int(key string) (int, error)
+//  cnf.Int64(key string) (int64, error)
+//  cnf.Bool(key string) (bool, error)
+//  cnf.Float(key string) (float64, error)
+//  cnf.DefaultString(key string, defaultVal string) string
+//  cnf.DefaultStrings(key string, defaultVal []string) []string
+//  cnf.DefaultInt(key string, defaultVal int) int
+//  cnf.DefaultInt64(key string, defaultVal int64) int64
+//  cnf.DefaultBool(key string, defaultVal bool) bool
+//  cnf.DefaultFloat(key string, defaultVal float64) float64
+//  cnf.DIY(key string) (interface{}, error)
+//  cnf.GetSection(section string) (map[string]string, error)
+//  cnf.SaveConfigFile(filename string) error
+//
+//  more docs http://beego.me/docs/module/config.md
 package config
 
 import (
-    "errors"
-    "io/ioutil"
-    "strconv"
-    "strings"
-    "time"
+	"fmt"
 )
 
-type Config struct {
-    globalContent   map[string]string
-    sectionContents map[string]map[string]string
-    sections        []string
+// Configer defines how to get and set value from configuration raw data.
+type Configer interface {
+	Set(key, val string) error   //support section::key type in given key when using ini type.
+	String(key string) string    //support section::key type in key string when using ini and json type; Int,Int64,Bool,Float,DIY are same.
+	Strings(key string) []string //get string slice
+	Int(key string) (int, error)
+	Int64(key string) (int64, error)
+	Bool(key string) (bool, error)
+	Float(key string) (float64, error)
+	DefaultString(key string, defaultVal string) string      // support section::key type in key string when using ini and json type; Int,Int64,Bool,Float,DIY are same.
+	DefaultStrings(key string, defaultVal []string) []string //get string slice
+	DefaultInt(key string, defaultVal int) int
+	DefaultInt64(key string, defaultVal int64) int64
+	DefaultBool(key string, defaultVal bool) bool
+	DefaultFloat(key string, defaultVal float64) float64
+	DIY(key string) (interface{}, error)
+	GetSection(section string) (map[string]string, error)
+	SaveConfigFile(filename string) error
 }
 
-func NewConfig() *Config {
-    return &Config{
-        globalContent:   make(map[string]string),
-        sectionContents: make(map[string]map[string]string),
-    }
+// Config is the adapter interface for parsing config file to get raw data to Configer.
+type Config interface {
+	Parse(key string) (Configer, error)
+	ParseData(data []byte) (Configer, error)
 }
 
-// Load reads config file and returns an initialized Config.
-func (this *Config) Load(configFile string) *Config {
-    stream, err := ioutil.ReadFile(configFile)
-    if err != nil {
-        panic("config read file error : " + configFile + "\n")
-    }
-    this.LoadString(string(stream))
-    return this
+var adapters = make(map[string]Config)
+
+// Register makes a config adapter available by the adapter name.
+// If Register is called twice with the same name or if driver is nil,
+// it panics.
+func Register(name string, adapter Config) {
+	if adapter == nil {
+		panic("config: Register adapter is nil")
+	}
+	if _, ok := adapters[name]; ok {
+		panic("config: Register called twice for adapter " + name)
+	}
+	adapters[name] = adapter
 }
 
-// Save writes config content to a config file.
-func (this *Config) Save(configFile string) error {
-    return ioutil.WriteFile(configFile, []byte(this.String()), 0777)
+// NewConfig adapterName is ini/json/xml/yaml.
+// filename is the config file path.
+func NewConfig(adapterName, filename string) (Configer, error) {
+	adapter, ok := adapters[adapterName]
+	if !ok {
+		return nil, fmt.Errorf("config: unknown adaptername %q (forgotten import?)", adapterName)
+	}
+	return adapter.Parse(filename)
 }
 
-func (this *Config) Clear() {
-    this.globalContent = make(map[string]string)
-    this.sectionContents = make(map[string]map[string]string)
-    this.sections = nil
+// NewConfigData adapterName is ini/json/xml/yaml.
+// data is the config data.
+func NewConfigData(adapterName string, data []byte) (Configer, error) {
+	adapter, ok := adapters[adapterName]
+	if !ok {
+		return nil, fmt.Errorf("config: unknown adaptername %q (forgotten import?)", adapterName)
+	}
+	return adapter.ParseData(data)
 }
 
-func (this *Config) LoadString(s string) error {
-    lines := strings.Split(s, "\n")
-    section := ""
-    for _, line := range lines {
-        line = strings.Trim(line, emptyRunes)
-        if line == "" || line[0] == '#' {
-            continue
-        }
-        if line[0] == '[' {
-            if lineLen := len(line); line[lineLen-1] == ']' {
-                section = line[1 : lineLen-1]
-                sectionAdded := false
-                for _, oldSection := range this.sections {
-                    if section == oldSection {
-                        sectionAdded = true
-                        break
-                    }
-                }
-                if !sectionAdded {
-                    this.sections = append(this.sections, section)
-                }
-                continue
-            }
-        }
-        pair := strings.SplitN(line, "=", 2)
-        if len(pair) != 2 {
-            return errors.New("bad config file syntax")
-        }
-        key := strings.Trim(pair[0], emptyRunes)
-        value := strings.Trim(pair[1], emptyRunes)
-        if section == "" {
-            this.globalContent[key] = value
-        } else {
-            if _, ok := this.sectionContents[section]; !ok {
-                this.sectionContents[section] = make(map[string]string)
-            }
-            this.sectionContents[section][key] = value
-        }
-    }
-    return nil
+// ParseBool returns the boolean value represented by the string.
+//
+// It accepts 1, 1.0, t, T, TRUE, true, True, YES, yes, Yes,Y, y, ON, on, On,
+// 0, 0.0, f, F, FALSE, false, False, NO, no, No, N,n, OFF, off, Off.
+// Any other value returns an error.
+func ParseBool(val interface{}) (value bool, err error) {
+	if val != nil {
+		switch v := val.(type) {
+		case bool:
+			return v, nil
+		case string:
+			switch v {
+			case "1", "t", "T", "true", "TRUE", "True", "YES", "yes", "Yes", "Y", "y", "ON", "on", "On":
+				return true, nil
+			case "0", "f", "F", "false", "FALSE", "False", "NO", "no", "No", "N", "n", "OFF", "off", "Off":
+				return false, nil
+			}
+		case int8, int32, int64:
+			strV := fmt.Sprintf("%s", v)
+			if strV == "1" {
+				return true, nil
+			} else if strV == "0" {
+				return false, nil
+			}
+		case float64:
+			if v == 1 {
+				return true, nil
+			} else if v == 0 {
+				return false, nil
+			}
+		}
+		return false, fmt.Errorf("parsing %q: invalid syntax", val)
+	}
+	return false, fmt.Errorf("parsing <nil>: invalid syntax")
 }
-
-func (this *Config) String() string {
-    s := ""
-    for key, value := range this.globalContent {
-        s += key + "=" + value + "\n"
-    }
-    for section, content := range this.sectionContents {
-        s += "[" + section + "]\n"
-        for key, value := range content {
-            s += key + "=" + value + "\n"
-        }
-    }
-    return s
-}
-
-func (this *Config) StringWithMeta() string {
-    s := "__sections__=" + strings.Join(this.sections, ",") + "\n"
-    return s + this.String()
-}
-
-func (this *Config) GlobalHas(key string) bool {
-    if _, ok := this.globalContent[key]; ok {
-        return true
-    }
-    return false
-}
-
-func (this *Config) GlobalGet(key string) string {
-    return this.globalContent[key]
-}
-
-func (this *Config) GlobalSet(key string, value string) {
-    this.globalContent[key] = value
-}
-
-func (this *Config) GlobalGetInt(key string) int {
-    value := this.GlobalGet(key)
-    if value == "" {
-        return 0
-    }
-    result, err := strconv.Atoi(value)
-    if err != nil {
-        return 0
-    }
-    return result
-}
-
-func (this *Config) GlobalGetInt64(key string) int64 {
-    value := this.GlobalGet(key)
-    if value == "" {
-        return 0
-    }
-    result, err := strconv.ParseInt(value, 10, 64)
-    if err != nil {
-        return 0
-    }
-    return result
-}
-
-func (this *Config) GlobalGetDuration(key string) time.Duration {
-    return time.Duration(this.GlobalGetInt(key)) * time.Second
-}
-
-func (this *Config) GlobalGetDeadline(key string) time.Time {
-    return time.Now().Add(time.Duration(this.GlobalGetInt(key)) * time.Second)
-}
-
-func (this *Config) GlobalGetSlice(key string, separator string) []string {
-    result := []string{}
-    value := this.GlobalGet(key)
-    if value != "" {
-        for _, part := range strings.Split(value, separator) {
-            result = append(result, strings.Trim(part, emptyRunes))
-        }
-    }
-    return result
-}
-
-func (this *Config) GlobalGetSliceInt(key string, separator string) []int {
-    result := []int{}
-    value := this.GlobalGetSlice(key, separator)
-    for _, part := range value {
-        int, err := strconv.Atoi(part)
-        if err != nil {
-            continue
-        }
-        result = append(result, int)
-    }
-    return result
-}
-
-func (this *Config) GlobalContent() map[string]string {
-    return this.globalContent
-}
-
-func (this *Config) Sections() []string {
-    return this.sections
-}
-
-func (this *Config) HasSection(section string) bool {
-    if _, ok := this.sectionContents[section]; ok {
-        return true
-    }
-    return false
-}
-
-func (this *Config) SectionHas(section string, key string) bool {
-    if !this.HasSection(section) {
-        return false
-    }
-    if _, ok := this.sectionContents[section][key]; ok {
-        return true
-    }
-    return false
-}
-
-func (this *Config) SectionGet(section string, key string) string {
-    if content, ok := this.sectionContents[section]; ok {
-        return content[key]
-    }
-    return ""
-}
-
-func (this *Config) SectionSet(section string, key string, value string) {
-    if content, ok := this.sectionContents[section]; ok {
-        content[key] = value
-    } else {
-        content = make(map[string]string)
-        content[key] = value
-        this.sectionContents[section] = content
-    }
-}
-
-func (this *Config) SectionGetInt(section string, key string) int {
-    value := this.SectionGet(section, key)
-    if value == "" {
-        return 0
-    }
-    result, err := strconv.Atoi(value)
-    if err != nil {
-        return 0
-    }
-    return result
-}
-
-func (this *Config) SectionGetDuration(section string, key string) time.Duration {
-    return time.Duration(this.SectionGetInt(section, key)) * time.Second
-}
-
-func (this *Config) SectionGetSlice(section string, key string, separator string) []string {
-    result := []string{}
-    value := this.SectionGet(section, key)
-    if value != "" {
-        for _, part := range strings.Split(value, separator) {
-            result = append(result, strings.Trim(part, emptyRunes))
-        }
-    }
-    return result
-}
-
-func (this *Config) SectionContent(section string) map[string]string {
-    return this.sectionContents[section]
-}
-
-func (this *Config) SectionContents() map[string]map[string]string {
-    return this.sectionContents
-}
-
-const emptyRunes = " \r\t\v"

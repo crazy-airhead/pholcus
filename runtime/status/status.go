@@ -1,10 +1,8 @@
-﻿package status
-
-//**************************************表示状态的静态变量****************************************\\
+package status
 
 // 运行模式
 const (
-	UNSET = iota - 1
+	UNSET int = iota - 1
 	OFFLINE
 	SERVER
 	CLIENT
@@ -22,7 +20,8 @@ const (
 
 // 运行状态
 const (
-	STOP = iota
+	STOPPED = iota - 1
+	STOP
 	RUN
 	PAUSE
 )

@@ -1,58 +1,48 @@
 package downloader
 
 import (
-	"github.com/henrylee2cn/pholcus/app/downloader/context"
-	"github.com/henrylee2cn/surfer"
+	"errors"
+	"net/http"
+	"net/http/cookiejar"
 
-	"log"
-	"time"
+	"github.com/henrylee2cn/pholcus/app/downloader/request"
+	"github.com/henrylee2cn/pholcus/app/downloader/surfer"
+	"github.com/henrylee2cn/pholcus/app/spider"
+	"github.com/henrylee2cn/pholcus/config"
 )
 
 type Surfer struct {
-	download surfer.Surfer
+	surf    surfer.Surfer
+	phantom surfer.Surfer
 }
 
-func NewSurfer(useCookie bool, paseTime time.Duration, proxy ...string) *Surfer {
-	sf := surfer.New()
-	if len(proxy) != 0 {
-		sf.SetProxy(proxy[0])
+var (
+	cookieJar, _     = cookiejar.New(nil)
+	SurferDownloader = &Surfer{
+		surf:    surfer.New(cookieJar),
+		phantom: surfer.NewPhantom(config.PHANTOMJS, config.PHANTOMJS_TEMP, cookieJar),
+	}
+)
+
+func (self *Surfer) Download(sp *spider.Spider, cReq *request.Request) *spider.Context {
+	ctx := spider.GetContext(sp, cReq)
+
+	var resp *http.Response
+	var err error
+
+	switch cReq.GetDownloaderID() {
+	case request.SURF_ID:
+		resp, err = self.surf.Download(cReq)
+
+	case request.PHANTOM_ID:
+		resp, err = self.phantom.Download(cReq)
 	}
 
-	return &Surfer{
-		download: sf,
-	}
-}
-
-func (self *Surfer) Download(cReq *context.Request) *context.Response {
-	cResp := context.NewResponse(nil)
-
-	resp, err := self.download.Download(cReq.GetMethod(), cReq.GetUrl(), cReq.GetReferer(), cReq.GetPostData(), cReq.GetHeader(), cReq.GetCookies())
-
-	cResp.SetRequest(cReq)
-
-	cResp.SetResponse(resp)
-
-	if err != nil {
-		log.Println(" *     ", err)
-		// cResp.SetStatus(false, err.Error())
-		// return cResp
+	if resp.StatusCode >= 400 {
+		err = errors.New("响应状态 " + resp.Status)
 	}
 
-	cResp.SetStatus(true, "")
-	return cResp
-}
+	ctx.SetResponse(resp).SetError(err)
 
-func (self *Surfer) SetUseCookie(use bool) Downloader {
-	self.download.SetUseCookie(use)
-	return self
-}
-
-func (self *Surfer) SetPaseTime(paseTime time.Duration) Downloader {
-	self.download.SetPaseTime(paseTime)
-	return self
-}
-
-func (self *Surfer) SetProxy(proxy string) Downloader {
-	self.download.SetProxy(proxy)
-	return self
+	return ctx
 }

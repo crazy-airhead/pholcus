@@ -1,163 +1,91 @@
 package collector
 
 import (
-	"database/sql"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/henrylee2cn/pholcus/common/pool"
+	"fmt"
+	"sync"
+
+	"github.com/henrylee2cn/pholcus/common/mysql"
 	"github.com/henrylee2cn/pholcus/common/util"
-	"github.com/henrylee2cn/pholcus/config"
-	"strings"
+	"github.com/henrylee2cn/pholcus/logs"
 )
 
 /************************ Mysql 输出 ***************************/
-var mysqlPool = pool.NewPool(new(mysqlFish), 1024)
-
-type mysqlFish struct {
-	*sql.DB
-}
-
-func (self *mysqlFish) New() pool.Fish {
-	db, err := sql.Open("mysql", config.MYSQL_OUTPUT.User+":"+config.MYSQL_OUTPUT.Password+"@tcp("+config.MYSQL_OUTPUT.Host+")/"+config.MYSQL_OUTPUT.DefaultDB+"?charset=utf8")
-	if err != nil {
-		panic(err)
-	}
-	return &mysqlFish{DB: db}
-}
-
-// 判断连接有效性
-func (self *mysqlFish) Usable() bool {
-	if self.DB.Ping() != nil {
-		return false
-	}
-	return true
-}
-
-// 自毁方法，在被资源池删除时调用
-func (self *mysqlFish) Close() {
-	self.DB.Close()
-}
-
-func (*mysqlFish) Clean() {}
 
 func init() {
-	Output["mysql"] = func(self *Collector, dataIndex int) {
-		db := mysqlPool.GetOne().(*mysqlFish)
-		defer mysqlPool.Free(db)
+	var (
+		mysqlTable     = map[string]*mysql.MyTable{}
+		mysqlTableLock sync.RWMutex
+	)
 
-		var newMysql = new(myTable)
+	var getMysqlTable = func(name string) (*mysql.MyTable, bool) {
+		mysqlTableLock.RLock()
+		defer mysqlTableLock.RUnlock()
+		tab, ok := mysqlTable[name]
+		if ok {
+			return tab.Clone(), true
+		}
+		return nil, false
+	}
 
-		for Name, Rule := range self.GetRules() {
-			//跳过不输出的数据
-			if len(Rule.GetOutFeild()) == 0 {
-				continue
-			}
+	var setMysqlTable = func(name string, tab *mysql.MyTable) {
+		mysqlTableLock.Lock()
+		mysqlTable[name] = tab
+		mysqlTableLock.Unlock()
+	}
 
-			newMysql.setTableName("`" + tabName(self, Name) + "`")
-
-			for _, title := range Rule.GetOutFeild() {
-				newMysql.addColumn(title)
-			}
-
-			newMysql.addColumn("当前连接", "上级链接", "下载时间").
-				create(db.DB)
-
-			num := 0 //小计
-
-			for _, datacell := range self.DockerQueue.Dockers[dataIndex] {
-				if datacell["RuleName"].(string) == Name {
-					for _, title := range Rule.GetOutFeild() {
-						vd := datacell["Data"].(map[string]interface{})
-						if v, ok := vd[title].(string); ok || vd[title] == nil {
-							newMysql.addRow(v)
-						} else {
-							newMysql.addRow(util.JsonString(vd[title]))
-						}
+	DataOutput["mysql"] = func(self *Collector) error {
+		_, err := mysql.DB()
+		if err != nil {
+			return fmt.Errorf("Mysql数据库链接失败: %v", err)
+		}
+		var (
+			mysqls    = make(map[string]*mysql.MyTable)
+			namespace = util.FileNameReplace(self.namespace())
+		)
+		for _, datacell := range self.dataDocker {
+			subNamespace := util.FileNameReplace(self.subNamespace(datacell))
+			tName := joinNamespaces(namespace, subNamespace)
+			table, ok := mysqls[tName]
+			if !ok {
+				table, ok = getMysqlTable(tName)
+				if ok {
+					mysqls[tName] = table
+				} else {
+					table = mysql.New()
+					table.SetTableName(tName)
+					for _, title := range self.MustGetRule(datacell["RuleName"].(string)).ItemFields {
+						table.AddColumn(title + ` MEDIUMTEXT`)
 					}
-					newMysql.addRow(datacell["Url"].(string), datacell["ParentUrl"].(string), datacell["DownloadTime"].(string)).
-						update(db.DB)
-
-					num++
+					if self.Spider.OutDefaultField() {
+						table.AddColumn(`Url VARCHAR(255)`, `ParentUrl VARCHAR(255)`, `DownloadTime VARCHAR(50)`)
+					}
+					if err := table.Create(); err != nil {
+						logs.Log.Error("%v", err)
+						continue
+					} else {
+						setMysqlTable(tName, table)
+						mysqls[tName] = table
+					}
 				}
 			}
-			newMysql = new(myTable)
-		}
-	}
-}
-
-//sql转换结构体
-type myTable struct {
-	tableName   string
-	columnNames []string
-	rowValues   []string
-	sqlCode     string
-}
-
-//设置表名
-func (self *myTable) setTableName(name string) *myTable {
-	self.tableName = name
-	return self
-}
-
-//设置表单列
-func (self *myTable) addColumn(name ...string) *myTable {
-	self.columnNames = append(self.columnNames, name...)
-	return self
-}
-
-//生成"创建表单"的语句，执行前须保证setTableName()、addColumn()已经执行
-func (self *myTable) create(db *sql.DB) {
-	if self.tableName != "" {
-		self.sqlCode = `create table if not exists ` + self.tableName + `(`
-		self.sqlCode += ` id int(8) not null primary key auto_increment`
-
-		if self.columnNames != nil {
-			for _, rowValues := range self.columnNames {
-				self.sqlCode += `,` + rowValues + ` varchar(255) not null`
+			data := []string{}
+			for _, title := range self.MustGetRule(datacell["RuleName"].(string)).ItemFields {
+				vd := datacell["Data"].(map[string]interface{})
+				if v, ok := vd[title].(string); ok || vd[title] == nil {
+					data = append(data, v)
+				} else {
+					data = append(data, util.JsonString(vd[title]))
+				}
 			}
-		}
-		self.sqlCode += `);`
-	}
-	stmt, err := db.Prepare(self.sqlCode)
-	util.CheckErr(err)
-
-	_, err = stmt.Exec()
-	util.CheckErr(err)
-}
-
-//设置插入的1行数据
-func (self *myTable) addRow(value ...string) *myTable {
-	self.rowValues = append(self.rowValues, value...)
-	return self
-}
-
-//向sqlCode添加"插入1行数据"的语句，执行前须保证create()、addRow()已经执行
-//insert into table1(field1,field2) values(rowValues[0],rowValues[1])
-func (self *myTable) update(db *sql.DB) {
-	if self.tableName != "" {
-		self.sqlCode = `insert into ` + self.tableName + `(`
-		if self.columnNames != nil {
-			for _, v1 := range self.columnNames {
-				self.sqlCode += "`" + v1 + "`" + `,`
+			if self.Spider.OutDefaultField() {
+				data = append(data, datacell["Url"].(string), datacell["ParentUrl"].(string), datacell["DownloadTime"].(string))
 			}
-			self.sqlCode = string(self.sqlCode[:len(self.sqlCode)-1])
-			self.sqlCode += `)values(`
+			table.AutoInsert(data)
 		}
-		if self.rowValues != nil {
-			for _, v2 := range self.rowValues {
-				v2 = strings.Replace(v2, `"`, `\"`, -1)
-				self.sqlCode += `"` + v2 + `"` + `,`
-			}
-			self.sqlCode = string(self.sqlCode[:len(self.sqlCode)-1])
-			self.sqlCode += `);`
+		for _, tab := range mysqls {
+			util.CheckErr(tab.FlushInsert())
 		}
+		mysqls = nil
+		return nil
 	}
-
-	stmt, err := db.Prepare(self.sqlCode)
-	util.CheckErr(err)
-
-	_, err = stmt.Exec()
-	util.CheckErr(err)
-
-	// 清空临时数据
-	self.rowValues = []string{}
 }

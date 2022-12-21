@@ -1,11 +1,12 @@
 package gui
 
 import (
-	"github.com/henrylee2cn/pholcus/config"
-	"github.com/henrylee2cn/pholcus/runtime/status"
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
-	"log"
+
+	"github.com/henrylee2cn/pholcus/config"
+	"github.com/henrylee2cn/pholcus/logs"
+	"github.com/henrylee2cn/pholcus/runtime/status"
 )
 
 func runmodeWindow() {
@@ -16,7 +17,7 @@ func runmodeWindow() {
 			DataSource:     Input,
 			ErrorPresenter: ErrorPresenterRef{&ep},
 		},
-		Title:   config.APP_FULL_NAME,
+		Title:   config.FULL_NAME,
 		MinSize: Size{450, 350},
 		Layout:  VBox{ /*MarginsZero: true*/ },
 		Children: []Widget{
@@ -27,11 +28,11 @@ func runmodeWindow() {
 				Layout:   HBox{},
 				MinSize:  Size{0, 70},
 
-				DataMember: "RunMode",
+				DataMember: "Mode",
 				Buttons: []RadioButton{
-					{Text: GuiOpt.RunMode[0].Key, Value: GuiOpt.RunMode[0].Int},
-					{Text: GuiOpt.RunMode[1].Key, Value: GuiOpt.RunMode[1].Int},
-					{Text: GuiOpt.RunMode[2].Key, Value: GuiOpt.RunMode[2].Int},
+					{Text: GuiOpt.Mode[0].Key, Value: GuiOpt.Mode[0].Int},
+					{Text: GuiOpt.Mode[1].Key, Value: GuiOpt.Mode[1].Int},
+					{Text: GuiOpt.Mode[2].Key, Value: GuiOpt.Mode[2].Int},
 				},
 			},
 
@@ -39,28 +40,20 @@ func runmodeWindow() {
 				AssignTo: &host,
 				MaxSize:  Size{0, 120},
 				Children: []Widget{
-					VSplitter{
-						Children: []Widget{
-							Label{
-								Text: "分布式端口：（单机模式不填）",
-							},
-							NumberEdit{
-								Value:    Bind("Port"),
-								Suffix:   "",
-								Decimals: 0,
-							},
-						},
+					Label{
+						Text: "分布式端口：（单机模式不填）",
+					},
+					NumberEdit{
+						Value:    Bind("Port"),
+						Suffix:   "",
+						Decimals: 0,
 					},
 
-					VSplitter{
-						Children: []Widget{
-							Label{
-								Text: "主节点 URL：（客户端模式必填）",
-							},
-							LineEdit{
-								Text: Bind("Master"),
-							},
-						},
+					Label{
+						Text: "主节点 URL：（客户端模式必填）",
+					},
+					LineEdit{
+						Text: Bind("Master"),
 					},
 				},
 			},
@@ -71,11 +64,11 @@ func runmodeWindow() {
 				AssignTo: &runStopBtn,
 				OnClicked: func() {
 					if err := db.Submit(); err != nil {
-						log.Println(err)
+						logs.Log.Error("%v", err)
 						return
 					}
 
-					switch Input.RunMode {
+					switch Input.Mode {
 					case status.OFFLINE:
 						offlineWindow()
 
@@ -90,10 +83,10 @@ func runmodeWindow() {
 			},
 		},
 	}.Create()); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
-	if icon, err := walk.NewIconFromResource("ICON"); err == nil {
+	if icon, err := walk.NewIconFromResourceId(3); err == nil {
 		mw.SetIcon(icon)
 	}
 	// 运行窗体程序

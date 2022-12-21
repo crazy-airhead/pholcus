@@ -1,106 +1,109 @@
 package scheduler
 
 import (
-	"github.com/henrylee2cn/pholcus/app/downloader/context"
-	"github.com/henrylee2cn/pholcus/common/deduplicate"
-	"github.com/henrylee2cn/pholcus/runtime/status"
 	"sync"
+
+	"github.com/henrylee2cn/pholcus/app/aid/proxy"
+	"github.com/henrylee2cn/pholcus/logs"
+	"github.com/henrylee2cn/pholcus/runtime/cache"
+	"github.com/henrylee2cn/pholcus/runtime/status"
 )
 
-type Scheduler interface {
-	// 采集非重复url并返回对比结果，重复为true
-	Compare(string) bool
-	PauseRecover() // 暂停\恢复所有爬行任务
-	Stop()
-	IsStop() bool
-	SrcManager
-	// // 存入
-	// Push(*context.Request)
-	// // 取出
-	// Use(int) *context.Request
-	// // 释放一个资源
-	// Free()
-	// // 资源队列是否闲置
-	// IsEmpty(int) bool
-	// IsAllEmpty() bool
-
-	// // 情况全部队列
-	// ClearAll()
-}
-
+// 调度器
 type scheduler struct {
-	*SrcManage
-	*deduplicate.Deduplication
-	status int
+	status       int          // 运行状态
+	count        chan bool    // 总并发量计数
+	useProxy     bool         // 标记是否使用代理IP
+	proxy        *proxy.Proxy // 全局代理IP
+	matrices     []*Matrix    // Spider实例的请求矩阵列表
+	sync.RWMutex              // 全局读写锁
 }
 
 // 定义全局调度
-var Sdl Scheduler
-
-func Init(capacity uint) {
-	Sdl = newScheduler(capacity)
+var sdl = &scheduler{
+	status: status.RUN,
+	count:  make(chan bool, cache.Task.ThreadNum),
+	proxy:  proxy.New(),
 }
 
-func newScheduler(capacity uint) Scheduler {
-	return &scheduler{
-		SrcManage:     NewSrcManage(capacity).(*SrcManage),
-		Deduplication: deduplicate.New().(*deduplicate.Deduplication),
-		status:        status.RUN,
+// Init initialize scheduler.
+func Init() {
+	sdl.matrices = []*Matrix{}
+	sdl.count = make(chan bool, cache.Task.ThreadNum)
+
+	if cache.Task.ProxyMinute > 0 {
+		if sdl.proxy.Count() > 0 {
+			sdl.useProxy = true
+			sdl.proxy.UpdateTicker(cache.Task.ProxyMinute)
+			logs.Log.Informational(" *     使用代理IP，代理IP更换频率为 %v 分钟\n", cache.Task.ProxyMinute)
+		} else {
+			sdl.useProxy = false
+			logs.Log.Informational(" *     在线代理IP列表为空，无法使用代理IP\n")
+		}
+	} else {
+		sdl.useProxy = false
+		logs.Log.Informational(" *     不使用代理IP\n")
 	}
+
+	sdl.status = status.RUN
 }
 
-var pushMutex sync.Mutex
-
-// 添加请求到队列
-func (self *scheduler) Push(req *context.Request) {
-	pushMutex.Lock()
-	defer func() {
-		pushMutex.Unlock()
-	}()
-
-	if self.status == status.STOP {
-		return
-	}
-
-	// 有重复则返回
-	if self.Compare(req.GetUrl() + req.GetMethod()) {
-		return
-	}
-
-	// 留作未来分发请求用
-	// if pholcus.Self.GetRunMode() == config.SERVER || req.CanOutsource() {
-	// 	return
-	// }
-
-	self.SrcManage.Push(req)
+// ReloadProxyLib reload proxy ip list from config file.
+func ReloadProxyLib() {
+	sdl.proxy.Update()
 }
 
-func (self *scheduler) Compare(url string) bool {
-	return self.Deduplication.Compare(url)
-}
-
-func (self *scheduler) Use(spiderId int) (req *context.Request) {
-	if self.status != status.RUN {
-		return nil
-	}
-	return self.SrcManage.Use(spiderId)
+// AddMatrix 注册资源队列
+func AddMatrix(spiderName, spiderSubName string, maxPage int64) *Matrix {
+	matrix := newMatrix(spiderName, spiderSubName, maxPage)
+	sdl.RLock()
+	defer sdl.RUnlock()
+	sdl.matrices = append(sdl.matrices, matrix)
+	return matrix
 }
 
 // 暂停\恢复所有爬行任务
-func (self *scheduler) PauseRecover() {
-	switch self.status {
+func PauseRecover() {
+	sdl.Lock()
+	defer sdl.Unlock()
+	switch sdl.status {
 	case status.PAUSE:
-		self.status = status.RUN
+		sdl.status = status.RUN
 	case status.RUN:
-		self.status = status.PAUSE
+		sdl.status = status.PAUSE
 	}
 }
 
-func (self *scheduler) Stop() {
-	self.status = status.STOP
-	self.SrcManage.ClearAll()
+// 终止任务
+func Stop() {
+	// println("scheduler^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+	sdl.Lock()
+	defer sdl.Unlock()
+	sdl.status = status.STOP
+	// 清空
+	defer func() {
+		recover()
+	}()
+	// for _, matrix := range sdl.matrices {
+	// 	matrix.windup()
+	// }
+	close(sdl.count)
+	sdl.matrices = []*Matrix{}
+	// println("scheduler$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
 }
 
-func (self *scheduler) IsStop() bool {
-	return self.status == status.STOP
+// 每个spider实例分配到的平均资源量
+func (self *scheduler) avgRes() int32 {
+	avg := int32(cap(sdl.count) / len(sdl.matrices))
+	if avg == 0 {
+		avg = 1
+	}
+	return avg
+}
+
+func (self *scheduler) checkStatus(s int) bool {
+	self.RLock()
+	b := self.status == s
+	self.RUnlock()
+	return b
 }

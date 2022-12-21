@@ -1,21 +1,37 @@
-// Package util contains some common functions of GO_SPIDER project.
 package util
 
 import (
 	"crypto/md5"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
-	"golang.org/x/net/html/charset"
 	"hash/crc32"
 	"hash/fnv"
 	"io"
-	"log"
+	r "math/rand"
 	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
+	"unsafe"
+
+	"golang.org/x/net/html/charset"
+
+	"github.com/henrylee2cn/pholcus/logs"
+)
+
+const (
+	// Spider中启用Keyin的初始值
+	USE_KEYIN = "\r\t\n"
+)
+
+var (
+	re = regexp.MustCompile(">[ \t\n\v\f\r]+<")
 )
 
 // JsonpToJson modify jsonp string to json string
@@ -34,6 +50,20 @@ func JsonpToJson(json string) string {
 	json = strings.Replace(json, "\\'", "", -1)
 	regDetail, _ := regexp.Compile("([^\\s\\:\\{\\,\\d\"]+|[a-z][a-z\\d]*)\\s*\\:")
 	return regDetail.ReplaceAllString(json, "\"$1\":")
+}
+
+// 创建目录
+func Mkdir(Path string) {
+	p, _ := path.Split(Path)
+	if p == "" {
+		return
+	}
+	d, err := os.Stat(p)
+	if err != nil || !d.IsDir() {
+		if err = os.MkdirAll(p, 0777); err != nil {
+			logs.Log.Error("创建路径失败[%v]: %v\n", Path, err)
+		}
+	}
 }
 
 // The GetWDPath gets the work directory path.
@@ -71,6 +101,143 @@ func IsFileExists(path string) bool {
 	panic("util isFileExists not reached")
 }
 
+// 遍历文件，可指定后缀
+func WalkFiles(targpath string, suffixes ...string) (filelist []string) {
+	if !filepath.IsAbs(targpath) {
+		targpath, _ = filepath.Abs(targpath)
+	}
+	err := filepath.Walk(targpath, func(retpath string, f os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if f.IsDir() {
+			return nil
+		}
+		if len(suffixes) == 0 {
+			filelist = append(filelist, retpath)
+			return nil
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(retpath, suffix) {
+				filelist = append(filelist, retpath)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logs.Log.Error("util.WalkFiles: %v\n", err)
+		return
+	}
+
+	return
+}
+
+// 遍历目录，可指定后缀
+func WalkDir(targpath string, suffixes ...string) (dirlist []string) {
+	if !filepath.IsAbs(targpath) {
+		targpath, _ = filepath.Abs(targpath)
+	}
+	err := filepath.Walk(targpath, func(retpath string, f os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !f.IsDir() {
+			return nil
+		}
+		if len(suffixes) == 0 {
+			dirlist = append(dirlist, retpath)
+			return nil
+		}
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(retpath, suffix) {
+				dirlist = append(dirlist, retpath)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logs.Log.Error("util.WalkDir: %v\n", err)
+		return
+	}
+
+	return
+}
+
+// 遍历文件，可指定后缀，返回相对路径
+func WalkRelFiles(targpath string, suffixes ...string) (filelist []string) {
+	if !filepath.IsAbs(targpath) {
+		targpath, _ = filepath.Abs(targpath)
+	}
+	err := filepath.Walk(targpath, func(retpath string, f os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if f.IsDir() {
+			return nil
+		}
+		if len(suffixes) == 0 {
+			filelist = append(filelist, RelPath(retpath))
+			return nil
+		}
+		_retpath := RelPath(retpath)
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(_retpath, suffix) {
+				filelist = append(filelist, _retpath)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logs.Log.Error("util.WalkRelFiles: %v\n", err)
+		return
+	}
+
+	return
+}
+
+// 遍历目录，可指定后缀，返回相对路径
+func WalkRelDir(targpath string, suffixes ...string) (dirlist []string) {
+	if !filepath.IsAbs(targpath) {
+		targpath, _ = filepath.Abs(targpath)
+	}
+	err := filepath.Walk(targpath, func(retpath string, f os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !f.IsDir() {
+			return nil
+		}
+		if len(suffixes) == 0 {
+			dirlist = append(dirlist, RelPath(retpath))
+			return nil
+		}
+		_retpath := RelPath(retpath)
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(_retpath, suffix) {
+				dirlist = append(dirlist, _retpath)
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		logs.Log.Error("util.WalkRelDir: %v\n", err)
+		return
+	}
+
+	return
+}
+
+// 转相对路径
+func RelPath(targpath string) string {
+	basepath, _ := filepath.Abs("./")
+	rel, _ := filepath.Rel(basepath, targpath)
+	return strings.Replace(rel, `\`, `/`, -1)
+}
+
 // The IsNum judges string is number or not.
 func IsNum(a string) bool {
 	reg, _ := regexp.Compile("^\\d+$")
@@ -93,7 +260,7 @@ func XML2mapstr(xmldoc string) map[string]string {
 		case xml.StartElement:
 			key = token.Name.Local
 		case xml.CharData:
-			content := string([]byte(token))
+			content := Bytes2String([]byte(token))
 			m[key] = content
 		default:
 			// ...
@@ -119,8 +286,10 @@ func HashString(encode string) uint64 {
 
 // 制作特征值方法一
 func MakeUnique(obj interface{}) string {
-	baseString, _ := json.Marshal(obj)
-	return strconv.FormatUint(HashString(string(baseString)), 10)
+	b, _ := json.Marshal(obj)
+	hash := fnv.New64()
+	hash.Write(b)
+	return strconv.FormatUint(hash.Sum64(), 10)
 }
 
 // 制作特征值方法二
@@ -138,7 +307,7 @@ func MakeMd5(obj interface{}, length int) string {
 // 将对象转为json字符串
 func JsonString(obj interface{}) string {
 	b, _ := json.Marshal(obj)
-	s := fmt.Sprintf("%+v", string(b))
+	s := fmt.Sprintf("%+v", Bytes2String(b))
 	r := strings.Replace(s, `\u003c`, "<", -1)
 	r = strings.Replace(r, `\u003e`, ">", -1)
 	return r
@@ -147,60 +316,66 @@ func JsonString(obj interface{}) string {
 //检查并打印错误
 func CheckErr(err error) {
 	if err != nil {
-		log.Println(err)
+		logs.Log.Error("%v", err)
+	}
+}
+func CheckErrPanic(err error) {
+	if err != nil {
+		panic(err)
 	}
 }
 
 // 将文件名非法字符替换为相似字符
-func FileNameReplace(fileName string) (rfn string) {
-	// 替换`""`为`“”`
-	if strings.Count(fileName, `"`) > 0 {
-		var i = 1
-	label:
-		for k, v := range []byte(fileName) {
-			if string(v) != `"` {
-				continue
-			}
-			if i%2 == 1 {
-				fileName = string(fileName[:k]) + `“` + string(fileName[k+1:])
+
+func FileNameReplace(fileName string) string {
+	var q = 1
+	r := []rune(fileName)
+	size := len(r)
+	for i := 0; i < size; i++ {
+		switch r[i] {
+		case '"':
+			if q%2 == 1 {
+				r[i] = '“'
 			} else {
-				fileName = string(fileName[:k]) + `”` + string(fileName[k+1:])
+				r[i] = '”'
 			}
-			i++
-			goto label
+			q++
+		case ':':
+			r[i] = '：'
+		case '*':
+			r[i] = '×'
+		case '<':
+			r[i] = '＜'
+		case '>':
+			r[i] = '＞'
+		case '?':
+			r[i] = '？'
+		case '/':
+			r[i] = '／'
+		case '|':
+			r[i] = '∣'
+		case '\\':
+			r[i] = '╲'
 		}
 	}
-
-	rfn = strings.Replace(fileName, `:`, `：`, -1)
-	rfn = strings.Replace(rfn, `*`, `ж`, -1)
-	// rfn = strings.Replace(rfn, `*`, `×`, -1)
-	rfn = strings.Replace(rfn, `<`, `＜`, -1)
-	rfn = strings.Replace(rfn, `>`, `＞`, -1)
-	rfn = strings.Replace(rfn, `?`, `？`, -1)
-	rfn = strings.Replace(rfn, `/`, `／`, -1)
-	rfn = strings.Replace(rfn, `|`, `∣`, -1)
-	rfn = strings.Replace(rfn, `\`, `╲`, -1)
-	return
+	return strings.Replace(string(r), USE_KEYIN, ``, -1)
 }
 
 // 将Excel工作表名中非法字符替换为下划线
-func ExcelSheetNameReplace(fileName string) (rfn string) {
-	rfn = strings.Replace(fileName, `:`, `_`, -1)
-	rfn = strings.Replace(rfn, `：`, `_`, -1)
-	rfn = strings.Replace(rfn, `*`, `_`, -1)
-	rfn = strings.Replace(rfn, `?`, `_`, -1)
-	rfn = strings.Replace(rfn, `？`, `_`, -1)
-	rfn = strings.Replace(rfn, `/`, `_`, -1)
-	rfn = strings.Replace(rfn, `／`, `_`, -1)
-	rfn = strings.Replace(rfn, `\`, `_`, -1)
-	rfn = strings.Replace(rfn, `╲`, `_`, -1)
-	rfn = strings.Replace(rfn, `]`, `_`, -1)
-	rfn = strings.Replace(rfn, `[`, `_`, -1)
-	return
+//
+func ExcelSheetNameReplace(fileName string) string {
+	r := []rune(fileName)
+	size := len(r)
+	for i := 0; i < size; i++ {
+		switch r[i] {
+		case ':', '：', '*', '?', '？', '/', '／', '\\', '╲', ']', '[':
+			r[i] = '_'
+		}
+	}
+	return strings.Replace(string(r), USE_KEYIN, ``, -1)
 }
 
 func Atoa(str interface{}) string {
-
 	if str == nil {
 		return ""
 	}
@@ -223,129 +398,72 @@ func Atoui(str interface{}) uint {
 	return uint(u)
 }
 
-// []T 基本类型的切片从小到大快速排序
-func QSortT(arr interface{}, start2End ...int) {
-	var start, end, low, high int
-
-	switch _arr := arr.(type) {
-	case []int:
-		switch len(start2End) {
-		case 0:
-			start = 0
-			end = len(_arr) - 1
-		case 1:
-			start = start2End[0]
-			end = len(_arr) - 1
-		default:
-			start = start2End[0]
-			end = start2End[1]
-		}
-		low = start
-		high = end
-		key := _arr[start]
-
-		for {
-			for low < high {
-				if _arr[high] < key {
-					_arr[low] = _arr[high]
-					break
-				}
-				high--
-			}
-			for low < high {
-				if _arr[low] > key {
-					_arr[high] = _arr[low]
-					break
-				}
-				low++
-			}
-			if low >= high {
-				_arr[low] = key
-				break
-			}
-		}
-
-	case []uint64:
-		switch len(start2End) {
-		case 0:
-			start = 0
-			end = len(_arr) - 1
-		case 1:
-			start = start2End[0]
-			end = len(_arr) - 1
-		default:
-			start = start2End[0]
-			end = start2End[1]
-		}
-		low = start
-		high = end
-		key := _arr[start]
-
-		for {
-			for low < high {
-				if _arr[high] < key {
-					_arr[low] = _arr[high]
-					break
-				}
-				high--
-			}
-			for low < high {
-				if _arr[low] > key {
-					_arr[high] = _arr[low]
-					break
-				}
-				low++
-			}
-			if low >= high {
-				_arr[low] = key
-				break
-			}
-		}
-
-	case []string:
-		switch len(start2End) {
-		case 0:
-			start = 0
-			end = len(_arr) - 1
-		case 1:
-			start = start2End[0]
-			end = len(_arr) - 1
-		default:
-			start = start2End[0]
-			end = start2End[1]
-		}
-		low = start
-		high = end
-		key := _arr[start]
-
-		for {
-			for low < high {
-				if _arr[high] < key {
-					_arr[low] = _arr[high]
-					break
-				}
-				high--
-			}
-			for low < high {
-				if _arr[low] > key {
-					_arr[high] = _arr[low]
-					break
-				}
-				low++
-			}
-			if low >= high {
-				_arr[low] = key
-				break
-			}
-		}
-	default:
-		return
+// RandomCreateBytes generate random []byte by specify chars.
+func RandomCreateBytes(n int, alphabets ...byte) []byte {
+	const alphanum = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	var bytes = make([]byte, n)
+	var randby bool
+	if num, err := rand.Read(bytes); num != n || err != nil {
+		r.Seed(time.Now().UnixNano())
+		randby = true
 	}
+	for i, b := range bytes {
+		if len(alphabets) == 0 {
+			if randby {
+				bytes[i] = alphanum[r.Intn(len(alphanum))]
+			} else {
+				bytes[i] = alphanum[b%byte(len(alphanum))]
+			}
+		} else {
+			if randby {
+				bytes[i] = alphabets[r.Intn(len(alphabets))]
+			} else {
+				bytes[i] = alphabets[b%byte(len(alphabets))]
+			}
+		}
+	}
+	return bytes
+}
 
-	if low-1 > start {
-		QSortT(arr, start, low-1)
+// 切分用户输入的自定义信息
+func KeyinsParse(keyins string) []string {
+	keyins = strings.TrimSpace(keyins)
+	if keyins == "" {
+		return []string{}
 	}
-	if high+1 < end {
-		QSortT(arr, high+1, end)
+	for _, v := range re.FindAllString(keyins, -1) {
+		keyins = strings.Replace(keyins, v, "><", -1)
 	}
+	m := map[string]bool{}
+	for _, v := range strings.Split(keyins, "><") {
+		v = strings.TrimPrefix(v, "<")
+		v = strings.TrimSuffix(v, ">")
+		if v == "" {
+			continue
+		}
+		m[v] = true
+	}
+	s := make([]string, len(m))
+	i := 0
+	for k := range m {
+		s[i] = k
+		i++
+	}
+	return s
+}
+
+// Bytes2String直接转换底层指针，两者指向的相同的内存，改一个另外一个也会变。
+// 效率是string([]byte{})的百倍以上，且转换量越大效率优势越明显。
+func Bytes2String(b []byte) string {
+	return *(*string)(unsafe.Pointer(&b))
+}
+
+// String2Bytes直接转换底层指针，两者指向的相同的内存，改一个另外一个也会变。
+// 效率是string([]byte{})的百倍以上，且转换量越大效率优势越明显。
+// 转换之后若没做其他操作直接改变里面的字符，则程序会崩溃。
+// 如 b:=String2bytes("xxx"); b[1]='d'; 程序将panic。
+func String2Bytes(s string) []byte {
+	x := (*[2]uintptr)(unsafe.Pointer(&s))
+	h := [3]uintptr{x[0], x[1], x[1]}
+	return *(*[]byte)(unsafe.Pointer(&h))
 }

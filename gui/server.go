@@ -1,12 +1,14 @@
 package gui
 
 import (
-	"github.com/henrylee2cn/pholcus/config"
+	"strconv"
+
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
-	"log"
-	"strconv"
-	// "time"
+
+	"github.com/henrylee2cn/pholcus/app"
+	"github.com/henrylee2cn/pholcus/config"
+	"github.com/henrylee2cn/pholcus/logs"
 )
 
 var serverCount int
@@ -21,7 +23,7 @@ func serverWindow() {
 			DataSource:     Input,
 			ErrorPresenter: ErrorPresenterRef{&ep},
 		},
-		Title:   config.APP_FULL_NAME + "                                                          【 运行模式 -> 服务器 】",
+		Title:   config.FULL_NAME + "                                                          【 运行模式 -> 服务器 】",
 		MinSize: Size{1100, 700},
 		Layout:  VBox{MarginsZero: true},
 		Children: []Widget{
@@ -53,10 +55,23 @@ func serverWindow() {
 							VSplitter{
 								Children: []Widget{
 									Label{
-										Text: "自定义输入：（多任务之间以 | 隔开，选填）",
+										Text: "自定义配置（多任务请分别多包一层“<>”）",
 									},
 									LineEdit{
-										Text: Bind("Keywords"),
+										Text: Bind("Keyins"),
+									},
+								},
+							},
+
+							VSplitter{
+								Children: []Widget{
+									Label{
+										Text: "*采集上限（默认限制URL数）：",
+									},
+									NumberEdit{
+										Value:    Bind("Limit"),
+										Suffix:   "",
+										Decimals: 0,
 									},
 								},
 							},
@@ -68,19 +83,6 @@ func serverWindow() {
 									},
 									NumberEdit{
 										Value:    Bind("ThreadNum", Range{1, 99999}),
-										Suffix:   "",
-										Decimals: 0,
-									},
-								},
-							},
-
-							VSplitter{
-								Children: []Widget{
-									Label{
-										Text: "采集页数：（选填）",
-									},
-									NumberEdit{
-										Value:    Bind("MaxPage"),
 										Suffix:   "",
 										Decimals: 0,
 									},
@@ -103,13 +105,13 @@ func serverWindow() {
 							VSplitter{
 								Children: []Widget{
 									Label{
-										Text: "*间隔基准:",
+										Text: "*暂停时长参考:",
 									},
 									ComboBox{
-										Value:         Bind("BaseSleeptime", SelRequired{}),
-										BindingMember: "Uint",
+										Value:         Bind("Pausetime", SelRequired{}),
 										DisplayMember: "Key",
-										Model:         GuiOpt.SleepTime,
+										BindingMember: "Int64",
+										Model:         GuiOpt.Pausetime,
 									},
 								},
 							},
@@ -117,13 +119,13 @@ func serverWindow() {
 							VSplitter{
 								Children: []Widget{
 									Label{
-										Text: "*随机延迟:",
+										Text: "*代理IP更换频率:",
 									},
 									ComboBox{
-										Value:         Bind("RandomSleepPeriod", SelRequired{}),
-										BindingMember: "Uint",
+										Value:         Bind("ProxyMinute", SelRequired{}),
 										DisplayMember: "Key",
-										Model:         GuiOpt.SleepTime,
+										BindingMember: "Int64",
+										Model:         GuiOpt.ProxyMinute,
 									},
 								},
 							},
@@ -149,6 +151,30 @@ func serverWindow() {
 						AssignTo: &ep,
 					},
 
+					HSplitter{
+						MaxSize: Size{220, 50},
+						Children: []Widget{
+							Label{
+								Text: "继承并保存成功记录",
+							},
+							CheckBox{
+								Checked: Bind("SuccessInherit"),
+							},
+						},
+					},
+
+					HSplitter{
+						MaxSize: Size{220, 50},
+						Children: []Widget{
+							Label{
+								Text: "继承并保存失败记录",
+							},
+							CheckBox{
+								Checked: Bind("FailureInherit"),
+							},
+						},
+					},
+
 					PushButton{
 						MinSize:   Size{90, 0},
 						Text:      serverBtnTxt(),
@@ -159,7 +185,7 @@ func serverWindow() {
 			},
 		},
 	}.Create()); err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
 
 	setWindow()
@@ -174,7 +200,7 @@ func serverWindow() {
 // 点击开始事件
 func serverStart() {
 	if err := db.Submit(); err != nil {
-		log.Println(err)
+		logs.Log.Error("%v", err)
 		return
 	}
 
@@ -182,7 +208,7 @@ func serverStart() {
 	Input.Spiders = spiderMenu.GetChecked()
 
 	if len(Input.Spiders) == 0 {
-		log.Println(" *     —— 亲，任务列表不能为空哦~")
+		logs.Log.Warning(" *     —— 亲，任务列表不能为空哦~")
 		return
 	}
 
@@ -196,7 +222,7 @@ func serverStart() {
 	SpiderPrepare()
 
 	// 生成分发任务
-	LogicApp.Run()
+	app.LogicApp.Run()
 
 	serverCount++
 
